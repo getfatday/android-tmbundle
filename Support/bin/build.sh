@@ -3,121 +3,83 @@
 # Android.tmbundle build script
 # Finds Ant build.xml files and builds the project
 # (re)Installs *-debug.apk files to a running Android emulator using adb
+#
+# Variables
+#
+# ANDROID_SDK_PATH: Set if you want to specify the Android SDK path
+# ANDROID_ACTIVITY_NAME: The name of the activity to launch after install
 
-printError() {
-	echo "<span class=\"error\">Error: $1</span>"
-}
+source "$TM_SUPPORT_PATH/lib/bash_init.sh"
+source utilities.sh
+source html.sh
 
-printStyles() {
-	cat <<'HTML'
-		<style type="text/css">
-			html, body {
-				margin:0;
-				background:#D4E9A9;
-			} 
-			#body {
-				padding:10px;
-			} 
-			h1 {
-				background:#AACA46;
-				color:#fff;
-				padding:10px;
-				border-bottom:solid 3px #aaa;
-			} 
-			.error {
-				color:#f00;
-				font-weight:bold;
-				display:block;
-			} 
-			pre {
-				background:#ddd;
-				border:solid 1px #000;
-				padding:10px;
-				overflow:auto;
-			}
-		</style>
-HTML
-}
+(
+    export TM_ANT=${TM_ANT:-ant}
 
-printFooter() {
-	echo "</div><!-- #body --></body></html>"
-}
+    require_cmd "$TM_ANT" "If you have installed ant, then you need to either <a href=\"help:anchor='search_path'%20bookID='TextMate%20Help'\">update your <tt>PATH</tt></a> or set the <tt>TM_ANT</tt> shell variable (e.g. in Preferences / Advanced)"
 
-cleanupAndExit() {
-	printFooter
-	exit
-}
+    export BUILD_DIR="$(project_dir)"
+    export MANIFEST="$BUILD_DIR/AndroidManifest.xml"
 
-if [ "$1" = "install" ]; then
-	TITLE="Android: Build & Install"
-else
-	TITLE="Android: Build"
-fi
+    require_file "$MANIFEST" "$BUILD_DIR/build.xml"
 
-echo "<html><head><title>$TITLE</title>"
-printStyles
-echo "</head><body><h1>$TITLE</h1><div id=\"body\">"
+    if [ -z "$ANDROID_SDK_PATH" ]; then
+        require_file "$BUILD_DIR/local.properties"
+        export ANDROID_SDK_PATH="$(java_property $BUILD_DIR/local.properties sdk-location)"
+    fi
+    
+    test -z "$ANDROID_SDK_PATH" && \
+    put_err "If you have installed the Android SDK, then you need to either <a href=\"help:anchor='search_path'%20bookID='TextMate%20Help'\">update your <tt>PATH</tt></a> or set the <tt>ANDROID_SDK_PATH</tt> shell variable (e.g. in Preferences / Advanced)"
 
-#######################################
-## Build with Ant #####################
-#######################################
+    export ANDROID_SDK_TOOLS="$ANDROID_SDK_PATH/tools"
+    export ANDROID_ADB="$ANDROID_SDK_TOOLS/adb"
+    export ANDROID_EMULATOR="$ANDROID_SDK_TOOLS/emulator"
 
-ANT=`which ant`
-if [ "$ANT" = "" ]; then
-	printError "Couldn't find Ant!"
-	cleanupAndExit
-fi
+    export ANDROID_PACKAGE_NAME="$(package_name $MANIFEST)"
+    export ANDROID_ACTIVITY_NAME="${ANDROID_ACTIVITY_NAME:-$(activity_name $MANIFEST)}"
 
-cd "$TM_DIRECTORY"
+    cd $BUILD_DIR
 
-while [ "$PWD" != "/" ]; do
-	if test -e "$PWD/build.xml"; then
-		BUILD_DIR="$PWD"
-		break
-	fi
-	cd ..
-done
+    export INSTALL_TYPE="$1"
+    export DEVICE_COUNT=$(device_count)
+    
+    if [ $[DEVICE_COUNT] -ne 1 ]; then
+        (
+            test $[DEVICE_COUNT] -gt 1 && \
+            put_err "Too many devices connected!"
 
-if [ "$BUILD_DIR" = "" ]; then
-	printError "Couldn't find build.xml!"
-	cleanupAndExit
-fi
+            test $[DEVICE_COUNT] -eq 0 && \
+            put_line "Waiting for device..." && \
+            $ANDROID_ADB wait-for-device
 
-cd $BUILD_DIR
+        ) | put_header "Device Bridge"
+        
+        test $[PIPESTATUS[0]] -ne 0 && \
+        exit 1
+    fi
 
-echo "Building from $BUILD_DIR<br>"
-echo "Building with Ant...<br>"
-echo "<pre>"
-$ANT
-echo "</pre>"
+    (
+        # Determine if package is already installed on device
+        test -z "$INSTALL_TYPE" && \
+        put_line "Checking device for existing install..." && \
+        $ANDROID_ADB shell pm list packages | grep -q "package:$ANDROID_PACKAGE_NAME" && \
+        INSTALL_TYPE="reinstall"
+    
+        $TM_ANT ${INSTALL_TYPE:-install} | put_javac
+    
+        test $[PIPESTATUS[0]] -ne 0 && \
+        put_err "Build Failed!" && \
+        exit 1
 
-#######################################
-## Install with adb ###################
-#######################################
+        put_line "Build Succeeded!"
+        test ! -z "$ANDROID_ACTIVITY_NAME" && ( \
+            put_line "Launching $ANDROID_PACKAGE_NAME/$ANDROID_ACTIVITY_NAME"; \
+            $ANDROID_ADB shell am start -n $ANDROID_PACKAGE_NAME/$ANDROID_ACTIVITY_NAME > /dev/null \
+        )
+        
+        test ! -z "$(ps -A | grep emulator | grep -v grep)" && \
+        osascript -e "tell application \"$(which $ANDROID_EMULATOR)\" to activate" 2> /dev/null
 
-if [ "$1" = "install" ]; then
+    ) | put_header "Building $ANDROID_PACKAGE_NAME"
 
-	ADB=`which adb`
-	if [ "$ADB" = "" ]; then
-		printError "Couldn't find adb!"
-		cleanupAndExit
-	fi
-
-	cd bin
-
-	echo "Installing with adb<br>"
-	echo "Looking for *-debug.apk files in $PWD<br>"
-	for FILE in $PWD/*-debug.apk; do
-		echo "Found debug apk: $FILE<br>"
-		CMD="$ADB install -r $FILE"
-		echo "Installing...<br>"
-		echo "<pre>"
-		$CMD
-		echo "</pre>"
-	done
-
-	osascript -e "tell application \"emulator\" to activate"
-
-fi
-
-cleanupAndExit
+) | put_window "Android: Building $ANDROID_PACKAGE_NAME"
