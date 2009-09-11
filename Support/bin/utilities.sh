@@ -29,7 +29,7 @@ activity_name() {
 }
 
 device_count() {
-    echo $[$($ANDROID_ADB devices | wc | awk '{ print $1 }') - 2]
+    echo $[$($ANDROID_ADB devices | grep -v '^\*' | wc | awk '{ print $1 }') - 2]
 }
 
 require_file() {
